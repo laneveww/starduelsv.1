@@ -1,0 +1,1280 @@
+--DEOBFUSCATED BY SOURCES HUB DEOBFUSCATOR
+
+-- OR's Duel Hub v4 - FINAL [AutoSteal build]
+-- Funcoes integradas do source_code_by_orzk
+
+-- ============================================================
+-- RESOLVE fireproximityprompt (compativel com key system / loadstring)
+-- Quando o script roda encapsulado, a funcao some do ambiente local
+-- mas ainda existe no getgenv() do executor
+-- ============================================================
+if not fireproximityprompt then
+    fireproximityprompt = (getgenv and getgenv().fireproximityprompt)
+        or (genv and genv().fireproximityprompt)
+        or function(prompt)
+            -- Fallback: tenta chamar via metodo do proprio prompt
+            pcall(function()
+                prompt:InputHoldBegin()
+                task.wait(0.05)
+                prompt:InputHoldEnd()
+            end);
+        end
+end
+
+-- ============================================================
+-- SERVICOS
+-- ============================================================
+local UIS          = game:GetService("UserInputService")
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local CoreGui      = game:GetService("CoreGui")
+local Workspace    = game:GetService("Workspace")
+local HttpService  = game:GetService("HttpService")
+local Lighting     = game:GetService("Lighting")
+local Stats        = game:GetService("Stats")
+local Camera       = Workspace.CurrentCamera
+
+local lp = Players.LocalPlayer
+
+-- ============================================================
+-- SISTEMA DE CONFIGURACAO UNIFICADO
+-- Todos os dados persistidos ficam em ORsDuel_Config.json
+-- ============================================================
+local GLOBAL_CONFIG_FILE = "ORsDuel_Config.json"
+local _globalConfig = {}
+
+local function _saveGlobalConfig()
+    if writefile then
+        pcall(writefile, GLOBAL_CONFIG_FILE, HttpService:JSONEncode(_globalConfig))
+    end
+end
+
+-- Config padrao embutido: aplicado na PRIMEIRA execucao (quando nao existe arquivo salvo).
+-- Garante que todo novo usuario comeca com as posicoes e toggles definidos pelo criador.
+local _DEFAULT_CONFIG = {
+    statsPanelPos   = {px=376, py=17},
+    speedHubConfig  = {speedActive=true, notStealSpeed=58, px=341, py=65, rtnSpeed=30.3},
+    grabBarPos      = {px=313, py=234},
+    hitTPPos        = {px=129, py=93},
+    spinConfig      = {velocidade=100, px=129, py=179},
+    menuPos         = {px=43,  py=13},
+    meleeAimConfig  = {px=494, py=20},
+    floatConfig     = {autoFloatEnabled=false, px=129, py=49, power=10},
+    tauntConfig     = {px=43,  py=53},
+    hbBtnPos        = {px=8,   py=54},
+    autoPlayConfig  = {px=129, py=136},
+    aimBotConfig    = {px=130, py=7,  speed=62.3},
+    wpBtnPos        = {px=16,  py=9},
+    infoBarPos      = {px=304, py=6},
+    duelPositions   = {
+        P1x=-472.6094970703125,  P1y=-6.811800003051758,  P1z=90.1884994506836,
+        P2x=-472.7843933105469,  P2y=-6.811800003051758,  P2z=91.6488037109375,
+        PEXx=-486.3769226074219, PEXy=-4.577744483947754, PEXz=95.26581573486328,
+        R1x=-473.0520935058594,  R1y=-6.811800003051758,  R1z=30.290199279785158,
+        R2x=-473.19378662109377, R2y=-6.811800003051758,  R2z=28.322099685668947,
+        REXx=-485.9707336425781, REXy=-4.627743244171143, REXz=25.178876876831056,
+    },
+    togglesState    = {
+        desyncNoReset=false, desyncReset=false,
+        speedCustomizer=false, spin=true,    autoTP=false,  noAnim=false,
+        lock=true,  autoDuel=true,  hitTP=true,   meleeAimbot=false,
+        playerEsp=true,  xrayBase=true,  hitboxExp=true,   autoSteal=true,
+        fov=false,  float=true,  infJump=true,  optimizer=true,  antiRagdoll=true,
+    },
+}
+
+local function _loadGlobalConfig()
+    local loaded = false
+    if isfile and isfile(GLOBAL_CONFIG_FILE) then
+        local ok, raw = pcall(readfile, GLOBAL_CONFIG_FILE)
+        if ok and raw then
+            local ok2, d = pcall(HttpService.JSONDecode, HttpService, raw)
+            if ok2 and d then
+                _globalConfig = d
+                loaded = true
+            end
+        end
+    end
+    -- Primeira execucao: aplica os defaults do criador e salva o arquivo
+    if not loaded then
+        _globalConfig = _DEFAULT_CONFIG
+        _saveGlobalConfig()
+    end
+end
+
+-- Debounce: agrupa multiplas chamadas rapidas em uma unica escrita ao disco
+-- evita corrupcao de arquivo quando varios hubs salvam ao mesmo tempo
+local _savePending = false
+local function _saveDebounced()
+    if _savePending then return end
+    _savePending = true
+    task.delay(0.3, function()
+        _savePending = false
+        _saveGlobalConfig()
+    end);
+end
+
+-- cfgGet: le uma secao do config unificado (retorna nil se nao existe)
+local function cfgGet(section)
+    return _globalConfig[section]
+end
+
+-- cfgSet: atualiza memoria + agenda escrita debounced
+local function cfgSet(section, data)
+    _globalConfig[section] = data
+    _saveDebounced()
+end
+
+-- cfgSetNow: igual ao cfgSet mas escreve imediatamente (usado em saves criticos)
+local function cfgSetNow(section, data)
+    _globalConfig[section] = data
+    _saveGlobalConfig()
+end
+
+_loadGlobalConfig()
+
+-- Backup periodico: salva a cada 8s para nao perder posicoes se o jogo fechar durante drag
+task.spawn(function()
+    while true do
+        task.wait(8)
+        _saveGlobalConfig()
+    end
+end);
+
+-- Anti-duplicacao
+pcall(function()
+    if CoreGui:FindFirstChild("ORsDuel_v4") then
+        CoreGui:FindFirstChild("ORsDuel_v4"):Destroy()
+    end
+end);
+
+-- ControlModule
+local ControlModule = nil
+pcall(function()
+    ControlModule = require(lp.PlayerScripts:WaitForChild("PlayerModule")):GetControls()
+end);
+
+local Screen = Instance.new("ScreenGui")
+Screen.Name           = "ORsDuel_v4"
+Screen.ResetOnSpawn   = false
+Screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+Screen.Parent         = CoreGui;
+
+-- ============================================================
+-- INTRO: "Orksz Duels > Nine Duels" centralizado, sem fundo
+-- ============================================================
+task.spawn(function()
+    local introGui = Instance.new("ScreenGui", CoreGui)
+    introGui.Name = "OrkszIntro"
+    introGui.ResetOnSpawn = false
+    introGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    introGui.DisplayOrder = 999
+
+    -- Som de teclado
+    local function playKey()
+        pcall(function()
+            local s = Instance.new("Sound", workspace)
+            s.SoundId = "rbxassetid://9119713951"
+            s.Volume = 0.35
+            s.PlaybackSpeed = 0.85 + math.random() * 0.3
+            s:Play()
+            game:GetService("Debris"):AddItem(s, 0.6)
+        end);
+    end
+
+    -- Um أƒآ؛nico label centralizado na tela
+    local lbl = Instance.new("TextLabel", introGui)
+    lbl.Size        = UDim2.new(1, 0, 0, 60)
+    lbl.Position    = UDim2.new(0, 0, 0.28, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.ZIndex      = 200
+    lbl.Font        = Enum.Font.GothamBlack
+    lbl.TextSize    = 28
+    lbl.TextColor3  = Color3.fromRGB(255, 255, 255)
+    lbl.TextTransparency = 0
+    lbl.Text        = ""
+    lbl.TextXAlignment = Enum.TextXAlignment.Center
+    lbl.TextStrokeTransparency = 0
+    lbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+
+    -- Entra vindo de cima (Y comeأƒآ§a em 0.3, vai pra 0.45)
+    lbl.Position = UDim2.new(0, 0, 0.12, 0)
+    lbl.TextTransparency = 1
+    TweenService:Create(lbl, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+        Position = UDim2.new(0, 0, 0.28, 0),
+        TextTransparency = 0,
+    }):Play()
+    task.wait(0.35)
+
+    -- Digita tudo num أƒآ؛nico label: "Orksz Duels > Nine Duels"
+    -- "Orksz Duels" em branco, " > Nine Duels" em cinza via cor أƒآ؛nica (sem RichText)
+    local part1 = "â­گStar Hub"
+    local part2 = " On Topâ­گ"
+    local full   = part1 .. part2
+
+    for i = 1, #full do
+        local ch = full:sub(i, i)
+        if ch ~= " " then playKey() end
+
+        -- Muda cor ao passar pro part2
+        if i <= #part1 then
+            lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        else
+            lbl.TextColor3 = Color3.fromRGB(140, 140, 140)
+        end
+        lbl.Text = full:sub(1, i)
+        task.wait(0.065)
+    end
+
+    -- Flash final em branco
+    task.wait(0.15)
+    TweenService:Create(lbl, TweenInfo.new(0.12), {TextColor3 = Color3.fromRGB(255,255,255)}):Play()
+    task.wait(0.12)
+    TweenService:Create(lbl, TweenInfo.new(0.25), {TextColor3 = Color3.fromRGB(200,200,200)}):Play()
+
+    task.wait(1.3)
+
+    -- Sai deslizando pra direita + fade
+    TweenService:Create(lbl, TweenInfo.new(0.4, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
+        Position = UDim2.new(1.1, 0, 0.28, 0),
+        TextTransparency = 1,
+    }):Play()
+    task.wait(0.45)
+    introGui:Destroy()
+end);
+
+-- ============================================================
+-- CORES
+-- ============================================================
+local C = {
+    Black     = Color3.fromRGB(0,   0,   0),
+    DarkRow   = Color3.fromRGB(18,  18,  18),
+    DarkTab   = Color3.fromRGB(15,  15,  15),
+    Gray      = Color3.fromRGB(136, 0, 255),
+    LightGray = Color3.fromRGB(136, 0, 255),
+    White     = Color3.fromRGB(255, 255, 255),
+    Dim       = Color3.fromRGB(90,  90,  90),
+    TogOff    = Color3.fromRGB(40,  40,  48),
+}
+
+local STROKE_ACTIVE = Color3.fromRGB(176, 0, 250)  -- vermelho escuro: aparece ao ativar/clicar
+local STROKE_IDLE   = Color3.fromRGB(0, 0, 0)      -- invisivel: sem borda em repouso
+local DOT_ON  = Color3.fromRGB(255, 255, 255)
+local DOT_OFF = Color3.fromRGB(100, 100, 100)
+
+-- ============================================================
+-- HELPER
+-- ============================================================
+local function New(class, props)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do if k ~= "Parent" then o[k] = v end end
+    o.Parent = props.Parent
+    return o
+end
+
+local function addDefaultStroke(frame)
+    local stroke = Instance.new("UIStroke", frame)
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Thickness = 2
+    stroke.Color = STROKE_IDLE
+    stroke.Transparency = 1  -- invisivel em repouso
+    stroke.Enabled = true
+    return stroke
+end
+
+local _hubRestoring = false -- quando true, hubOpen nao anima
+local tFrameGlobal = nil   -- taunt frame exposto para intro
+
+-- Chama logo apos setar Size de qualquer hub/sub-hub
+local function storeHubSize(frame)
+    frame:SetAttribute("origW", frame.Size.X.Offset)
+    frame:SetAttribute("origH", frame.Size.Y.Offset)
+end
+
+-- Sub-hubs: sem animacao, sأƒآ³ show/hide simples
+local function hubOpen(frame, instant)
+    frame.Visible = true
+end
+
+local function hubClose(frame, cb)
+    frame.Visible = false
+    if cb then cb() end
+end
+
+-- Aplica o mesmo gradiente preto do Hub Principal em qualquer frame
+-- Tabela global de gradientes animados
+local function applyHubGradient(frame)
+    -- Fundo preto solido igual ao hub principal
+    frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    frame.BackgroundTransparency = 0
+end
+
+local function setHubActive(hub, dot, active)
+    local stroke = hub:FindFirstChildOfClass("UIStroke")
+    if not stroke then stroke = addDefaultStroke(hub) end
+    if active then
+        stroke.Color = STROKE_ACTIVE
+        stroke.Transparency = 0  -- mostra borda vermelha escura
+    else
+        stroke.Color = STROKE_IDLE
+        stroke.Transparency = 1  -- esconde borda
+    end
+    if dot then
+        dot.Text = "ًںں£"
+        dot.TextColor3 = active and DOT_ON or DOT_OFF
+        dot.BackgroundTransparency = 1
+    end
+end
+
+-- ============================================================
+-- DRAG
+-- ============================================================
+local function Drag(mover, handle)
+    handle = handle or mover
+    local dragging, ds, sp, di
+    handle.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            ds       = i.Position
+            sp       = mover.Position
+            i.Changed:Connect(function()
+                if i.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end);
+        end
+    end);
+    handle.InputChanged:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch then
+            di = i
+        end
+    end);
+    UIS.InputChanged:Connect(function(i)
+        if i == di and dragging then
+            local d = i.Position - ds
+            mover.Position = UDim2.new(
+                sp.X.Scale, sp.X.Offset + d.X,
+                sp.Y.Scale, sp.Y.Offset + d.Y
+            )
+        end
+    end);
+end
+
+-- Sincroniza settings frame abaixo do hub principal em tempo real (move junto)
+local function linkSettingsToHub(mainFrame, settingsFrame, gapY)
+    gapY = gapY or 8
+    RunService.Heartbeat:Connect(function()
+        if not settingsFrame.Visible then return end
+        if not mainFrame or not mainFrame.Parent then return end
+        local ap = mainFrame.AbsolutePosition
+        local as = mainFrame.AbsoluteSize
+        settingsFrame.Position = UDim2.new(0, ap.X, 0, ap.Y + as.Y + gapY)
+    end);
+end
+
+-- Cria um toggle de expansao inline para um hub:
+-- ao clicar na engrenagem, o hub cresce/encolhe animado para revelar settings embutidos.
+-- collapsedH = altura fechado (ex: 34), expandedH = altura aberto (ex: 108)
+local function makeInlineExpand(frame, collapsedH, expandedH)
+    local expanded = false
+    frame.ClipsDescendants = true
+    local W = frame.Size.X.Offset
+    if W <= 0 then W = 128 end
+    local baseZ = frame.ZIndex
+    return function()
+        if _dragJustHappened then return end
+        expanded = not expanded
+        -- Quando expande: sobe ZIndex pra ficar na frente de tudo
+        -- Quando fecha: volta ao ZIndex original
+        frame.ZIndex = expanded and 50 or baseZ
+        for _, c in ipairs(frame:GetDescendants()) do
+            pcall(function() c.ZIndex = c.ZIndex + (expanded and 45 or -45) end);
+        end
+        local tw = TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+        TweenService:Create(frame, tw, {
+            Size = UDim2.new(0, W, 0, expanded and expandedH or collapsedH)
+        }):Play()
+    end
+end
+
+-- Flag global: true por um breve momento apos qualquer drag de sub-hub
+-- Usado pelos botoes para nao ativar acidentalmente apos arrastar
+local _dragJustHappened = false  -- flag global legada (compatibilidade)
+
+-- Click absorber: apos drag no mobile, coloca overlay invisivel que consome
+-- o proximo toque falso que o Roblox dispara automaticamente no TouchEnded
+local function _absorbNextClick()
+    _dragJustHappened = true
+    local absorber = Instance.new("TextButton")
+    absorber.Size = UDim2.new(1, 0, 1, 0)
+    absorber.Position = UDim2.new(0, 0, 0, 0)
+    absorber.BackgroundTransparency = 1
+    absorber.Text = ""
+    absorber.ZIndex = 9999
+    absorber.Modal = false
+    absorber.Parent = Screen
+    -- Consome o proximo click e se destroi
+    local conn
+    conn = absorber.InputBegan:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.Touch
+        or inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            conn:Disconnect()
+            absorber:Destroy()
+            task.delay(0.05, function() _dragJustHappened = false end);
+        end
+    end);
+    -- Seguranأƒآ§a: destroi apأƒآ³s 600ms caso nao venha clique falso
+    task.delay(0.6, function()
+        if absorber and absorber.Parent then
+            pcall(function() conn:Disconnect() end);
+            absorber:Destroy()
+        end
+        _dragJustHappened = false
+    end);
+end
+
+-- ============================================================
+-- MAKEDRAG v3 - mobile-safe com absorأƒآ§أƒآ£o ativa de clique falso
+-- ============================================================
+local function MakeDrag(frame, onDrop)
+    local dragging    = false
+    local didMove     = false
+    local activeInput = nil
+    local startPos    = Vector2.zero
+    local frameStart  = Vector2.zero
+
+    -- Threshold: 12px no touch, 4px no mouse
+    local TOUCH_THRESHOLD = 12
+    local MOUSE_THRESHOLD = 4
+
+    local function beginDrag(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        if not frame.Visible then return end
+        if dragging then return end
+        dragging    = true
+        didMove     = false
+        activeInput = input
+        startPos    = Vector2.new(input.Position.X, input.Position.Y)
+        frameStart  = Vector2.new(frame.AbsolutePosition.X, frame.AbsolutePosition.Y)
+    end
+
+    local function hookObj(obj)
+        if obj:IsA("ScrollingFrame") then return end  -- nao hookeia scroll
+        if obj:IsA("GuiObject") and not obj:IsA("TextBox") then
+            -- Nao hookeia descendentes de ScrollingFrame
+            local p = obj.Parent
+            while p do
+                if p:IsA("ScrollingFrame") then return end
+                p = p.Parent
+            end
+            obj.InputBegan:Connect(beginDrag)
+        end
+    end
+    hookObj(frame)
+    for _, d in ipairs(frame:GetDescendants()) do hookObj(d) end
+    frame.DescendantAdded:Connect(hookObj)
+
+    UIS.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input ~= activeInput and input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+
+        local delta = Vector2.new(input.Position.X, input.Position.Y) - startPos
+        local threshold = (activeInput and activeInput.UserInputType == Enum.UserInputType.Touch)
+            and TOUCH_THRESHOLD or MOUSE_THRESHOLD
+
+        if not didMove then
+            if delta.Magnitude < threshold then return end
+            didMove = true
+            -- IMPORTANTE: seta o flag AQUI, antes do InputEnded disparar.
+            -- No Roblox, MouseButton1Click do elemento filho dispara ANTES do
+            -- UIS.InputEnded global, entao o flag precisa estar ativo ja neste ponto.
+            _dragJustHappened = true
+        end
+
+        local nx = frameStart.X + delta.X
+        local ny = frameStart.Y + delta.Y
+        frame.Position = UDim2.new(0, nx, 0, ny)
+    end);
+
+    UIS.InputEnded:Connect(function(input)
+        if not dragging then return end
+        if input ~= activeInput then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+        local wasMobile = (input.UserInputType == Enum.UserInputType.Touch)
+        dragging    = false
+        activeInput = nil
+
+        if didMove then
+            if onDrop then onDrop(frame) end
+            if wasMobile then
+                -- Mobile: absorve o clique fantasma que o Roblox dispara apos drag
+                -- _absorbNextClick ja reseta _dragJustHappened apos consumir o clique
+                _absorbNextClick()
+            else
+                -- Mouse: reseta o flag apos um breve delay (suficiente para o
+                -- MouseButton1Click do botao ja ter sido bloqueado pelo guard)
+                task.delay(0.12, function() _dragJustHappened = false end);
+            end
+        end
+        didMove = false
+    end);
+
+    return function() return _dragJustHappened end
+end
+
+-- ============================================================
+-- GHOST EFFECT
+-- ============================================================
+local ghostReg = {}
+local ghostT   = 0
+
+RunService.Heartbeat:Connect(function(dt)
+    if #ghostReg == 0 then return end
+    ghostT = ghostT + 1
+    if ghostT < 2 then return end
+    ghostT = 0
+    local dt2 = dt * 2
+    local i = 1
+    while i <= #ghostReg do
+        local g = ghostReg[i]
+        if not g.f or not g.f.Parent then
+            pcall(function() g.l:Destroy() end);
+            table.remove(ghostReg, i)
+        else
+            g.wp = g.wp + g.ws
+            g.y  = g.y  + g.sp * 60 * dt2
+            g.l.Position = UDim2.new(g.x + math.sin(g.wp) * g.wa, 0, g.y, 0)
+            if     g.y < 0.05 then g.l.TextTransparency = 1 - g.op*(g.y+0.15)/0.20
+            elseif g.y > 0.75 then g.l.TextTransparency = 1 - g.op*(1-(g.y-0.75)/0.30)
+            else                    g.l.TextTransparency = 1 - g.op end
+            if g.y > 1.1 then
+                g.y=-.15; g.x=math.random(0,90)/100
+                g.sp=.0008+math.random()*.0012
+                g.wa=.03+math.random()*.04
+                g.op=.35+math.random()*.45
+                local sz=math.random(10,18)
+                g.l.TextSize=sz; g.l.Size=UDim2.new(0,sz+4,0,sz+4)
+            end
+            i = i + 1
+        end
+    end
+end);
+
+local function Ghost(frame, n)
+    frame.ClipsDescendants = true
+    for k = 1, (n or 5) do
+        task.delay((k-1)*0.3, function()
+            if not frame.Parent then return end
+            local l = Instance.new("TextLabel", frame)
+            l.BackgroundTransparency = 1
+            l.Text = ""
+            l.ZIndex = (frame.ZIndex or 5) + 1
+            l.BorderSizePixel = 0
+            local sz = math.random(10, 18)
+            l.TextSize = sz
+            l.Size = UDim2.new(0, sz+4, 0, sz+4)
+            l.TextTransparency = 1
+            local g = {
+                f  = frame, l = l,
+                x  = math.random(0,90)/100,
+                y  = -.15 - math.random()*.5,
+                sp = .0008 + math.random()*.0012,
+                wa = .03   + math.random()*.04,
+                ws = .04   + math.random()*.03,
+                wp = math.random()*math.pi*2,
+                op = .35   + math.random()*.45,
+            }
+            l.Position = UDim2.new(g.x, 0, g.y, 0)
+            table.insert(ghostReg, g)
+        end);
+    end
+end;
+
+-- ============================================================
+-- TP DOWN BUTTON
+-- ============================================================
+do
+    local tpDownDados = { px = -1, py = -1 }
+    do
+        local d = cfgGet("tpDownConfig") or {px=43, py=93}
+        if d then tpDownDados = d end
+    end
+
+    local tpDownFrame = Instance.new("Frame", Screen)
+    tpDownFrame.Name = "TpDownFrame"
+    tpDownFrame.Size = UDim2.new(0, 128, 0, 34)
+    if tpDownDados.px and tpDownDados.px >= 0 then
+        tpDownFrame.Position = UDim2.new(0, tpDownDados.px, 0, tpDownDados.py)
+    else
+        tpDownFrame.Position = UDim2.new(0.85, 0, 0.85, 0)
+    end
+    tpDownFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    tpDownFrame.Active = true; tpDownFrame.ZIndex = 5; tpDownFrame.Visible = true
+    Instance.new("UICorner", tpDownFrame).CornerRadius = UDim.new(0, 10)
+    local tpDownStroke = Instance.new("UIStroke", tpDownFrame)
+    tpDownStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    tpDownStroke.Thickness = 2; tpDownStroke.Color = STROKE_IDLE
+    tpDownStroke.Transparency = 1  -- sem borda em repouso
+    applyHubGradient(tpDownFrame)
+    local tpDownDot = Instance.new("TextLabel", tpDownFrame)
+    tpDownDot.BackgroundTransparency = 1
+    tpDownDot.Size = UDim2.new(0, 14, 0, 14)
+    tpDownDot.Position = UDim2.new(0, 3, 0.5, -7)
+    tpDownDot.Text = "ًںں£"; tpDownDot.ZIndex = 12
+    tpDownDot.TextColor3 = DOT_OFF
+    tpDownDot.Font = Enum.Font.GothamBold; tpDownDot.TextSize = 13
+
+
+    MakeDrag(tpDownFrame, function()
+        local ap = tpDownFrame.AbsolutePosition
+        tpDownDados.px = ap.X; tpDownDados.py = ap.Y
+        cfgSetNow("tpDownConfig", tpDownDados)
+    end);
+
+    local tpDownBtn = Instance.new("TextButton", tpDownFrame)
+    tpDownBtn.Size = UDim2.new(1, -18, 1, -8); tpDownBtn.Position = UDim2.new(0, 16, 0, 4)
+    tpDownBtn.BackgroundTransparency = 1; tpDownBtn.Text = "TP DOWN"
+    tpDownBtn.TextColor3 = Color3.new(1,1,1); tpDownBtn.Font = Enum.Font.Bangers
+    tpDownBtn.TextSize = 15; tpDownBtn.BorderSizePixel = 0; tpDownBtn.AutoButtonColor = false; tpDownBtn.ZIndex = 6
+    Instance.new("UICorner", tpDownBtn).CornerRadius = UDim.new(0, 10)
+
+    tpDownBtn.MouseButton1Click:Connect(function()
+        if _dragJustHappened then return end
+        -- Flash de borda vermelha ao clicar
+        tpDownStroke.Color = STROKE_ACTIVE
+        TweenService:Create(tpDownStroke, TweenInfo.new(0.1), {Transparency = 0}):Play()
+        task.delay(0.35, function()
+            TweenService:Create(tpDownStroke, TweenInfo.new(0.2), {Transparency = 1}):Play()
+        end);
+        local char = lp.Character
+        if char then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local rayParams = RaycastParams.new()
+                rayParams.FilterType = Enum.RaycastFilterType.Exclude
+                rayParams.FilterDescendantsInstances = {char}
+                local raycastResult = workspace:Raycast(hrp.Position, Vector3.new(0, -1000, 0), rayParams)
+                if raycastResult then
+                    hrp.CFrame = CFrame.new(hrp.Position.X, raycastResult.Position.Y + hrp.Size.Y/2 + 0.1, hrp.Position.Z)
+                else
+                    hrp.CFrame = CFrame.new(hrp.Position.X, -50, hrp.Position.Z)
+                end
+            end
+        end
+    end);
+end
+
+-- ============================================================
+-- MINI BOTAO "MENU"
+-- ============================================================
+local miniFrame = Instance.new("Frame", Screen)
+miniFrame.Size             = UDim2.new(0, 72, 0, 30)
+miniFrame.Position         = UDim2.new(0.05, 0, 0.20, 0)
+miniFrame.BackgroundColor3 = C.Black
+miniFrame.BorderSizePixel  = 0
+miniFrame.Active           = true
+miniFrame.ZIndex           = 10
+Instance.new("UICorner", miniFrame).CornerRadius = UDim.new(0, 10)
+local mStroke = Instance.new("UIStroke", miniFrame)
+mStroke.Thickness = 2
+mStroke.Color     = Color3.fromRGB(0, 0, 0)
+mStroke.Transparency = 1  -- sem borda em repouso
+applyHubGradient(miniFrame)
+
+local menuBtn = New("TextButton", {
+    Size                    = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency  = 1,
+    BorderSizePixel         = 0,
+    Text                    = "MENU",
+    TextColor3              = C.White,
+    Font = Enum.Font.Bangers,
+    TextSize                = 20,
+    AutoButtonColor         = false,
+    ZIndex                  = 11,
+    Parent                  = miniFrame,
+})
+Instance.new("UICorner", menuBtn).CornerRadius = UDim.new(0, 10)
+
+-- ============================================================
+-- HUB PRINCIPAL
+-- ============================================================
+local ITEM_H   = 32
+local ITEM_PAD = 2
+local HEADER_H = 54
+
+local MainFrame = Instance.new("Frame", Screen)
+MainFrame.Name             = "HubMain"
+MainFrame.Size             = UDim2.new(0, 198, 0, 240)
+MainFrame.Position         = UDim2.new(0.5, -99, 0.5, -120)
+MainFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+MainFrame.BackgroundTransparency = 0
+MainFrame.Visible          = false
+MainFrame.ZIndex           = 5
+MainFrame.Active           = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
+local hStroke = Instance.new("UIStroke", MainFrame)
+hStroke.Thickness = 2; hStroke.Color = Color3.fromRGB(0, 0, 0)
+hStroke.Transparency = 1  -- sem borda em repouso
+-- Fundo preto solido igual ao logo (sem gradiente animado)
+
+-- Drag do MainFrame com save de posicao
+do
+    local mainPosDados = cfgGet("hubMainPos") or {px=309, py=67}
+    do
+        MainFrame.Position = UDim2.new(0, mainPosDados.px, 0, mainPosDados.py)
+    end
+    local pressing, pressStart, frameStart, dragInput, movedDist, activeInput = false, Vector2.zero, Vector2.zero, nil, 0, nil
+    MainFrame.InputBegan:Connect(function(i)
+        if i.UserInputType ~= Enum.UserInputType.MouseButton1 and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        -- Sأƒآ³ inicia drag se o toque for na area do header (acima do ContentArea)
+        local relY = i.Position.Y - MainFrame.AbsolutePosition.Y
+        if relY > HEADER_H then return end  -- toque no conteudo = nao arrasta o frame
+        pressing = true; movedDist = 0
+        pressStart = Vector2.new(i.Position.X, i.Position.Y)
+        frameStart = Vector2.new(MainFrame.AbsolutePosition.X, MainFrame.AbsolutePosition.Y)
+        activeInput = i; dragInput = nil
+    end);
+    MainFrame.InputChanged:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then
+            dragInput = i
+        end
+    end);
+    UIS.InputChanged:Connect(function(i)
+        if not pressing or i ~= dragInput then return end
+        local d = Vector2.new(i.Position.X, i.Position.Y) - pressStart
+        movedDist = d.Magnitude
+        MainFrame.Position = UDim2.new(0, frameStart.X + d.X, 0, frameStart.Y + d.Y)
+    end);
+    UIS.InputEnded:Connect(function(i)
+        if not pressing or i ~= activeInput then return end
+        if i.UserInputType ~= Enum.UserInputType.MouseButton1 and i.UserInputType ~= Enum.UserInputType.Touch then return end
+        pressing = false; activeInput = nil
+        if movedDist >= 8 then
+            local ap = MainFrame.AbsolutePosition
+            mainPosDados.px = ap.X; mainPosDados.py = ap.Y
+            cfgSetNow("hubMainPos", mainPosDados)
+        end
+        movedDist = 0
+    end);
+end
+
+-- Titulo ORKSZ DUELS com animacao preto/branco
+local hubTitleLbl = New("TextLabel", {
+    Text = "STAR DUELS", TextColor3 = Color3.fromRGB(255, 255, 255),
+    Font = Enum.Font.GothamBlack, TextSize = 16,
+    Size = UDim2.new(1, 0, 0, 36), Position = UDim2.new(0, 0, 0, 0),
+    BackgroundTransparency = 1, TextXAlignment = "Center", ZIndex = 6, Parent = MainFrame,
+})
+do
+    local t = 0; local dir = 1
+    RunService.Heartbeat:Connect(function(dt)
+        if not hubTitleLbl or not hubTitleLbl.Parent then return end
+        t = t + dt * 0.7 * dir
+        if t >= 1 then t = 1; dir = -1
+        elseif t <= 0 then t = 0; dir = 1 end
+        local v = math.floor(t * 255)
+        hubTitleLbl.TextColor3 = Color3.fromRGB(v, v, v)
+    end);
+end
+
+local TabContainer = New("Frame", {
+    Size = UDim2.new(1, 0, 0, 26), Position = UDim2.new(0, 0, 0, 34),
+    BackgroundColor3 = C.DarkTab, ZIndex = 6, Parent = MainFrame,
+})
+New("UICorner",    {CornerRadius = UDim.new(0, 6), Parent = TabContainer})
+New("UIListLayout",{FillDirection = "Horizontal", HorizontalAlignment = "Center", Parent = TabContainer})
+
+local ContentArea = New("Frame", {
+    Size = UDim2.new(1, 0, 0, 240 - HEADER_H),
+    Position = UDim2.new(0, 0, 0, HEADER_H),
+    BackgroundTransparency = 1, ClipsDescendants = true,
+    ZIndex = 6, Parent = MainFrame,
+})
+
+-- ============================================================
+-- PAGINAS
+-- ============================================================
+local TABS     = {"Combat", "Protect", "Visual", "Desync", "Settings"}
+local TAB_ROWS = {Combat={}, Protect={}, Visual={}, Desync={}, Settings={}}
+local Pages    = {}
+local TabBtns  = {}
+
+local function rebuildPage(name)
+    local sf = Pages[name]; if not sf then return end
+    local n = #TAB_ROWS[name]
+    sf.CanvasSize = UDim2.new(0, 0, 0, n*ITEM_H + math.max(0,n-1)*ITEM_PAD + 10)
+end
+
+local function MakePage(name)
+    local sf = New("ScrollingFrame", {
+        Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Visible = false,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.Gray,
+        CanvasSize = UDim2.new(0,0,0,0),
+        AutomaticCanvasSize = Enum.AutomaticSize.None,
+        ElasticBehavior = Enum.ElasticBehavior.Never,
+        ScrollingDirection = Enum.ScrollingDirection.Y,
+        ZIndex = 6, Parent = ContentArea,
+    })
+    New("UIListLayout", {HorizontalAlignment="Center", Padding=UDim.new(0,ITEM_PAD), Parent=sf})
+    New("UIPadding",    {PaddingTop=UDim.new(0,6), Parent=sf})
+    Pages[name] = sf
+
+    local b = New("TextButton", {
+        Size=UDim2.new(0.25,0,1,0), BackgroundTransparency=1,
+        Text=name, TextColor3=C.Dim, Font = Enum.Font.GothamBold, TextSize=9,
+        ZIndex=7, Parent=TabContainer,
+    })
+    b.MouseButton1Click:Connect(function()
+        for _,p in pairs(Pages)   do p.Visible=false end
+        for _,x in pairs(TabBtns) do x.TextColor3=C.Dim end
+        sf.Visible=true; b.TextColor3=C.White
+    end);
+    TabBtns[name] = b
+end
+
+for _, t in ipairs(TABS) do MakePage(t) end
+TabBtns["Combat"].TextColor3 = C.White
+Pages["Combat"].Visible      = true
+
+-- ============================================================
+-- TOGGLE
+-- ============================================================
+local function Toggle(page, label, default, cb)
+    local on = default
+    local row = New("Frame", {
+        Size=UDim2.new(0.93,0,0,ITEM_H), BackgroundColor3=C.DarkRow,
+        BackgroundTransparency=0.3, ZIndex=7, Parent=Pages[page],
+    })
+    New("UICorner", {CornerRadius=UDim.new(0,8), Parent=row})
+    New("UIStroke", {Color=C.Gray, Thickness=1, Transparency=0.6, Parent=row})
+    New("TextLabel", {
+        Text=label, Size=UDim2.new(0.62,0,1,0), Position=UDim2.new(0.04,0,0,0),
+        TextColor3=Color3.new(1,1,1), Font = Enum.Font.GothamBold, TextSize=12,
+        BackgroundTransparency=1, TextXAlignment="Left", ZIndex=8, Parent=row,
+    })
+    local bg = New("Frame", {
+        Size=UDim2.new(0,38,0,18), Position=UDim2.new(1,-44,0.5,-9),
+        BackgroundColor3=on and C.Gray or C.TogOff, ZIndex=8, Parent=row,
+    })
+    New("UICorner", {CornerRadius=UDim.new(1,0), Parent=bg})
+    local dot = New("Frame", {
+        Size=UDim2.new(0,14,0,14),
+        Position=on and UDim2.new(0.55,0,0.1,0) or UDim2.new(0.08,0,0.1,0),
+        BackgroundColor3=Color3.new(1,1,1), ZIndex=9, Parent=bg,
+    })
+    New("UICorner", {CornerRadius=UDim.new(1,0), Parent=dot})
+    New("TextButton", {
+        Size=UDim2.new(1,0,1,0), BackgroundTransparency=1, Text="", ZIndex=10, Parent=row,
+    }).MouseButton1Click:Connect(function()
+        on = not on
+        TweenService:Create(bg,  TweenInfo.new(0.18), {BackgroundColor3=on and C.Gray or C.TogOff}):Play()
+        TweenService:Create(dot, TweenInfo.new(0.18), {Position=on and UDim2.new(0.55,0,0.1,0) or UDim2.new(0.08,0,0.1,0)}):Play()
+        cb(on)
+    end);
+    table.insert(TAB_ROWS[page], row)
+    rebuildPage(page)
+end
+
+-- ============================================================
+-- FORWARD DECLARATIONS
+-- ============================================================
+local startAimBot, stopAimBot
+local LockFrame, aimRedDot
+local aimEnabled = false
+local stopDuelExterno
+local forceLockToggle
+local forceDuelToggle
+
+-- ============================================================
+-- AUTO STEAL state (sistema baseado em animalCache - EGO style)
+local isStealing      = false
+local stealStartTime  = 0
+local STEAL_RADIUS    = 9
+local STEAL_DURATION  = 0.2
+local stealConn       = nil
+local progressConn    = nil
+local stealActive_    = false  -- estado interno (controlado pelo toggle)
+local animalCache     = {}     -- lista de {name,plot,slot,worldPosition,uid}
+local promptCache     = {}     -- uid -> ProximityPrompt
+local stealCache      = {}     -- prompt -> {holdCallbacks,triggerCallbacks,ready}
+
+-- ============================================================
+-- BARRA GRAB / DUEL
+-- ============================================================
+local grabBarFill    = nil
+local grabBarPercent = nil
+local gbStroke       = nil
+local radBox         = nil   -- exposto para Settings
+local durBox         = nil   -- exposto para Settings
+
+-- Save/Load posicao das barras (config unificado, separadas)
+local infoBarDados = { px = -1, py = -1 }
+local grabBarDados = { px = -1, py = -1 }
+
+local function carregarInfoBarPos()
+    local d = cfgGet("infoBarPos") or {px=304, py=6}
+    if d then infoBarDados = d end
+end
+local function carregarGrabBarPos()
+    local d = cfgGet("grabBarPos") or {px=245, py=198}
+    if d then
+        grabBarDados = d
+        if d.radius   then STEAL_RADIUS   = d.radius   end
+        if d.duration then STEAL_DURATION = d.duration end
+    end
+end
+carregarInfoBarPos()
+carregarGrabBarPos()
+
+local infoBarGui = Instance.new("ScreenGui", lp:WaitForChild("PlayerGui"))
+infoBarGui.Name = "InfoBarGui"
+infoBarGui.ResetOnSpawn = false
+infoBarGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+
+-- أ¢â€‌â‚¬أ¢â€‌â‚¬ BARRA FPS/PING أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+local topFrame = Instance.new("Frame", infoBarGui)
+topFrame.Size = UDim2.new(0, 190, 0, 34)
+topFrame.Position = UDim2.new(0.5, -95, 0, -6)
+topFrame.AnchorPoint = Vector2.new(0, 0)
+topFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+topFrame.BorderSizePixel = 0
+topFrame.Active = false
+Instance.new("UICorner", topFrame).CornerRadius = UDim.new(0, 10)
+applyHubGradient(topFrame)
+local topStroke = Instance.new("UIStroke", topFrame)
+topStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+topStroke.Thickness = 2
+topStroke.Color = STROKE_IDLE
+topStroke.Transparency = 1  -- sem borda em repouso
+do
+    local title = Instance.new("TextLabel", topFrame)
+    title.Size = UDim2.new(1, 0, 1, 0)
+    title.Position = UDim2.new(0, 0, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "STAR DUEL"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.Font = Enum.Font.Bangers
+    title.TextSize = 22
+    title.TextXAlignment = Enum.TextXAlignment.Center
+    title.TextYAlignment = Enum.TextYAlignment.Center
+
+    -- FPS label (canto esquerdo)
+    local fpsLbl = Instance.new("TextLabel", topFrame)
+    fpsLbl.Size = UDim2.new(0, 36, 0, 12)
+    fpsLbl.Position = UDim2.new(0, 5, 1, -14)
+    fpsLbl.BackgroundTransparency = 1
+    fpsLbl.Text = "fps:--"
+    fpsLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    fpsLbl.Font = Enum.Font.Bangers
+    fpsLbl.TextSize = 11
+    fpsLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+    -- Ping label (canto direito)
+    local pingLbl = Instance.new("TextLabel", topFrame)
+    pingLbl.Size = UDim2.new(0, 40, 0, 12)
+    pingLbl.Position = UDim2.new(1, -45, 1, -14)
+    pingLbl.BackgroundTransparency = 1
+    pingLbl.Text = "--:ping"
+    pingLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    pingLbl.Font = Enum.Font.Bangers
+    pingLbl.TextSize = 11
+    pingLbl.TextXAlignment = Enum.TextXAlignment.Right
+
+    -- Atualiza FPS e Ping com media movel para evitar flickering
+    local fpsAcum = 0; local fpsFrames = 0; local fpsTimer = 0
+    local pingTimer = 0
+    RunService.RenderStepped:Connect(function(dt)
+        if dt <= 0 then return end
+        fpsAcum = fpsAcum + (1 / dt); fpsFrames = fpsFrames + 1; fpsTimer = fpsTimer + dt
+        if fpsTimer >= 0.5 then
+            local avg = math.floor(fpsAcum / fpsFrames)
+            fpsLbl.Text = "FPS:" .. avg
+            fpsAcum = 0; fpsFrames = 0; fpsTimer = 0
+        end
+    end);
+    RunService.Heartbeat:Connect(function(dt)
+        pingTimer = pingTimer + dt
+        if pingTimer < 1 then return end
+        pingTimer = 0
+        local ok, ping = pcall(function()
+            return math.floor(lp:GetNetworkPing() * 1000)
+        end);
+        pingLbl.Text = (ok and type(ping)=="number") and (ping .. ":PING") or "--:PING"
+        pingLbl.TextColor3 = C.White
+    end);
+end
+
+
+
+-- أ¢â€‌â‚¬أ¢â€‌â‚¬ BARRA GRAB أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬أ¢â€‌â‚¬
+local botFrame = Instance.new("Frame", infoBarGui)
+botFrame.Name = "GrabBarFrame"
+botFrame.Size = UDim2.new(0, 240, 0, 28)
+botFrame.AnchorPoint = Vector2.new(0, 0)
+task.defer(function()
+    local vp = workspace.CurrentCamera.ViewportSize
+    if grabBarDados.px and grabBarDados.px >= 0
+    and grabBarDados.px < vp.X - 50 and grabBarDados.py < vp.Y - 10 then
+        botFrame.Position = UDim2.new(0, grabBarDados.px, 0, grabBarDados.py)
+    else
+        botFrame.Position = UDim2.new(0, math.floor(vp.X/2 - 120), 0, math.floor(vp.Y - 90))
+        grabBarDados.px = botFrame.Position.X.Offset
+        grabBarDados.py = botFrame.Position.Y.Offset
+        cfgSet("grabBarPos", grabBarDados)
+    end
+end);
+botFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+botFrame.BorderSizePixel = 0
+botFrame.Active = true
+Instance.new("UICorner", botFrame).CornerRadius = UDim.new(0, 10)
+applyHubGradient(botFrame)
+local botStroke = Instance.new("UIStroke", botFrame)
+botStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+botStroke.Thickness = 2
+botStroke.Color = STROKE_IDLE
+botStroke.Transparency = 1  -- sem borda em repouso
+gbStroke = botStroke
+do
+    -- READY label (esquerda)
+    local readyLbl = Instance.new("TextLabel", botFrame)
+    readyLbl.Size = UDim2.new(0, 90, 1, 0)
+    readyLbl.Position = UDim2.new(0, 10, 0, 0)
+    readyLbl.BackgroundTransparency = 1
+    readyLbl.Text = "READY"
+    readyLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+    readyLbl.Font = Enum.Font.GothamBold
+    readyLbl.TextSize = 11
+    readyLbl.TextXAlignment = Enum.TextXAlignment.Left
+    grabBarPercent = readyLbl
+
+
+
+    -- Box Radius (visivel na barra)
+    radBox = Instance.new("TextBox", botFrame)
+    radBox.Size = UDim2.new(0, 24, 0, 16)
+    radBox.Position = UDim2.new(1, -56, 0.5, -8)
+    radBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    radBox.BorderSizePixel = 0
+    radBox.Text = tostring(STEAL_RADIUS)
+    radBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    radBox.Font = Enum.Font.GothamBold; radBox.TextSize = 11
+    radBox.ClearTextOnFocus = false
+    Instance.new("UICorner", radBox).CornerRadius = UDim.new(0, 5)
+    radBox.FocusLost:Connect(function()
+        local val = tonumber(radBox.Text:match("[%d%.]+"))
+        if val then
+            STEAL_RADIUS = math.clamp(math.floor(val), 1, 200)
+            if hitboxActive then hitboxExpand = STEAL_RADIUS; hitboxExpandAllPrompts(hitboxExpand) end
+        end
+        radBox.Text = tostring(STEAL_RADIUS)
+        grabBarDados.radius = STEAL_RADIUS; cfgSet("grabBarPos", grabBarDados)
+    end);
+
+    -- Box Duration (visivel na barra)
+    durBox = Instance.new("TextBox", botFrame)
+    durBox.Size = UDim2.new(0, 24, 0, 16)
+    durBox.Position = UDim2.new(1, -28, 0.5, -8)
+    durBox.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    durBox.BorderSizePixel = 0
+    durBox.Text = tostring(STEAL_DURATION)
+    durBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    durBox.Font = Enum.Font.GothamBold; durBox.TextSize = 11
+    durBox.ClearTextOnFocus = false
+    Instance.new("UICorner", durBox).CornerRadius = UDim.new(0, 5)
+    durBox.FocusLost:Connect(function()
+        local val = tonumber(durBox.Text:match("[%d%.]+"))
+        if val then STEAL_DURATION = math.clamp(val, 0.05, 5) end
+        durBox.Text = tostring(STEAL_DURATION)
+        grabBarDados.duration = STEAL_DURATION; cfgSet("grabBarPos", grabBarDados)
+    end);
+
+    -- Barra de progresso na base
+    local barBg = Instance.new("Frame", botFrame)
+    barBg.Size = UDim2.new(1, -6, 0, 6)
+    barBg.Position = UDim2.new(0, 3, 1, -7)
+    barBg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    barBg.BorderSizePixel = 0
+    Instance.new("UICorner", barBg).CornerRadius = UDim.new(1, 0)
+    grabBarFill = Instance.new("Frame", barBg)
+    grabBarFill.Size = UDim2.fromScale(0, 1)
+    grabBarFill.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    grabBarFill.BorderSizePixel = 0
+    Instance.new("UICorner", grabBarFill).CornerRadius = UDim.new(1, 0)
+end
+
+-- InfoBar: posicao fixa com animacao de bob (nao arrastavel)
+do
+    local bobBaseX = workspace.CurrentCamera.ViewportSize.X * 0.5 - 105
+    local bobBaseY = -6
+    local bobT = 0
+    RunService.Heartbeat:Connect(function(dt)
+        bobT = bobT + dt
+        local offsetY = math.sin(bobT * 4.5) * 5
+        topFrame.Position = UDim2.new(0, bobBaseX, 0, bobBaseY + offsetY)
+    end);
+end
+
+-- Drag independente: barra GRAB
+do
+    local dragging, dragInput, dragStart, startAbsPos, activeBotInput
+    botFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = input.Position
+            startAbsPos = botFrame.AbsolutePosition
+            activeBotInput = input
+        end
+    end);
+    botFrame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
+    end);
+    UIS.InputEnded:Connect(function(input)
+        if not dragging then return end
+        if input ~= activeBotInput then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        dragging = false; activeBotInput = nil
+        grabBarDados.px = botFrame.AbsolutePosition.X
+        grabBarDados.py = botFrame.AbsolutePosition.Y
+        cfgSet("grabBarPos", grabBarDados)
+    end);
+    UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            local delta = input.Position - dragStart
+            botFrame.Position = UDim2.new(0, startAbsPos.X + delta.X, 0, startAbsPos.Y + delta.Y)
+        end
+    end);
+end
+
+-- ============================================================
+-- SPEED ACIMA DA CABECA (BillboardGui)
+-- ============================================================
+do
+local spdBillboard    = nil
+local spdLabelValue   = nil
+
+local function criarSpdBillboard(char)
+    -- Remove anterior se existir
+    if spdBillboard and spdBillboard.Parent then
+        spdBillboard:Destroy()
+    end
+    spdBillboard  = nil
+    spdLabelValue = nil
+
+    local head = char:WaitForChild("Head", 5)
+    if not head then return end
+
+    -- BillboardGui: so o numero, sem fundo nem caixa
+    local bb = Instance.new("BillboardGui")
+    bb.Name           = "SpdBillboard"
+    bb.Adornee        = head
+    bb.Size           = UDim2.new(0, 60, 0, 20)
+    bb.StudsOffset    = Vector3.new(0, 2.4, 0)
+    bb.AlwaysOnTop    = true
+    bb.ResetOnSpawn   = false
+    bb.LightInfluence = 0
+    bb.Parent         = char
+
+    -- Label direto na billboard, sem frame nem fundo
+    local lbl = Instance.new("TextLabel", bb)
+    lbl.Size                   = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = "0"
+    lbl.TextColor3             = Color3.fromRGB(255, 255, 255)
+    lbl.Font                   = Enum.Font.GothamBold
+    lbl.TextSize               = 14
+    lbl.TextXAlignment         = Enum.TextXAlignment.Center
+    lbl.TextYAlignment         = Enum.TextYAlignment.Center
+
+    -- Gradiente preto->branco no proprio texto
+    local txtGrad = Instance.new("UIGradient", lbl)
+    txtGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0,   Color3.fromRGB(255, 255, 255)),
+        ColorSequenceKeypoint.new(1,   Color3.fromRGB(180, 180, 180)),
+    })
+    txtGrad.Rotation = 90
+
+    -- Stroke preto para legibilidade
+    local txtStroke = Instance.new("UIStroke", lbl)
+    txtStroke.Thickness    = 2
+    txtStroke.Color        = Color3.fromRGB(0, 0, 0)
+    txtStroke.Transparency = 0
+
+    spdBillboard  = bb
+    spdLabelValue = lbl
+end
+
+-- Cria ao spawnar
+lp.CharacterAdded:Connect(function(char)
+    task.wait(0.1)
+    criarSpdBillboard(char)
+end);
+if lp.Character then
+    task.spawn(criarSpdBillboard, lp.Character)
+end
+
+
+-- Loop de atualizaأƒآ§أƒآ£o em tempo real (RenderStepped = todo frame)
+RunService.RenderStepped:Connect(function()
+    if not spdLabelValue then return end
+    local char = lp.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        spdLabelValue.Text = "0"
+        return
+    end
+    local vel = hrp.AssemblyLinearVelocity
+    local spd = math.floor(Vector3.new(vel.X, 0, vel.Z).Magnitude + 0.5)
+    spdLabelValue.Text = tostring(spd)
+end);
+end -- end do: SPEED ACIMA DA CABECA
+
+-- Barra do Duel
+local duelBarCurPct     = 0
+local function duelBarSetPhase(phase) end
+
+
+
+-- ============================================================
+-- SPEED BYPASS - hookeia debug.info pra esconder source dos loops de speed
+-- ============================================================
+do
+    local ok, dbg = pcall(function() return debug end);
+    if ok and dbg and dbg.info and hookfunction then
+        local oldInfo
+        oldInfo = hookfunction(dbg.info, function(...)
+            local s = oldInfo(1, "s")
+            -- Esconde qualquer checagem de source que envolva speed/velocity
+            if s and (s:find("Packages.Synchronizer") or s:find("Packages.Net")) then
+                return nil
+            end
+            return oldInfo(...)
+        end);
+    end
+end
+
+-- ============================================================
+-- ============================================================
+-- KEYBINDS GLOBAIS (centralizadas no Settings)
+-- ============================================================
+local keyBindAim      = nil; local waitingKeyAim   = false
+local keyBindAB       = nil; local waitingAB       = false
+local keyBindFloat    = nil; local waitingKeyFloat = false
+local dbKeyBind       = nil; local dbWaiting       = false
+local autoKeyBind     = nil; local autoWaitingKey  = false
+local keyBindAutoTP   = nil; local waitingAutoTP   = false
+local keyBindHitTP    = nil; local waitingHitTP    = false
+-- Labels de display (atualizados pelo Settings ao receber tecla)
+local _kbLabelAim   = nil
+local _kbLabelAB    = nil
+local _kbLabelFloat = nil
+local _kbLabelDrop  = nil
+local _kbLabelAuto  = nil
+
+-- ============================================================
+-- BRIDGES GLOBAIS: estado compartilhado entre DuelHub e SpeedHub
+-- ============
